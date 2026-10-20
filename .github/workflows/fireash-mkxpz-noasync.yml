@@ -1,0 +1,38 @@
+name: Fire Ash mkxp-z browser no-Asyncify fallback
+on:
+  push:
+    branches:
+      - fireash-engine-unthreaded-experiment
+permissions:
+  contents: read
+  actions: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Clone engine source and submodules
+        run: git clone --recursive --depth 1 https://github.com/white-axe/mkxp-z-libretro-emscripten.git engine-src
+      - name: Retrieve already successfully compiled unthreaded core
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 39478224861 --repo leehammy/leehammy.github.io --name mkxp-z-fast-core --dir engine-src/mkxp-z/build
+          test -s engine-src/mkxp-z/build/mkxp-z_libretro.a
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - name: Link browser frontend in single-thread mode
+        run: |
+          mv engine-src/mkxp-z/build/mkxp-z_libretro.a engine-src/retroarch/libretro_emscripten.a
+          cd engine-src/retroarch
+          emmake make -j "$(nproc)" -f Makefile.emscripten LIBRETRO=mkxp-z HAVE_THREADS=0 PROXY_TO_PTHREAD=0 HAVE_AUDIOWORKLET=0 HAVE_EXTRA_WASMFS=0 HAVE_WASMFS=0 HAVE_RWEBAUDIO=1 HAVE_AL=0 JSPI=0 ASYNC=0 ASSERTIONS=1
+          test -s mkxp-z_libretro.js
+          test -s mkxp-z_libretro.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FireAsh-mkxp-z-noasync-browser
+          path: |
+            engine-src/retroarch/mkxp-z_libretro.js
+            engine-src/retroarch/mkxp-z_libretro.wasm
+          retention-days: 30
