@@ -1,0 +1,78 @@
+name: Fire Ash mkxp-z browser engine fast compile
+on:
+  push:
+    branches:
+      - fireash-engine-unthreaded-experiment
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Clone engine source and submodules
+        run: git clone --recursive --depth 1 https://github.com/white-axe/mkxp-z-libretro-emscripten.git engine-src
+      - name: Reuse upstream's public precompiled Ruby bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 39071378834 --repo white-axe/mkxp-z-libretro-emscripten --name stage1 --dir engine-src/mkxp-z/libretro/build/libretro-stage1
+          test -s engine-src/mkxp-z/libretro/build/libretro-stage1/ruby/mkxp-sandbox-ruby-num-outputs.txt
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - run: sudo apt-get update && sudo apt-get install -y meson cmake ninja-build
+      - name: Compile mkxp-z without threading
+        run: |
+          cat >/tmp/cross.ini <<EOF
+          [binaries]
+          c = 'emcc'
+          cpp = 'em++'
+          ar = 'emar'
+          cmake = 'cmake'
+          [host_machine]
+          system = 'emscripten'
+          cpu_family = 'wasm32'
+          cpu = 'wasm32'
+          endian = 'little'
+          [properties]
+          cmake_toolchain_file = '$(em-config EMSCRIPTEN_ROOT)/cmake/Modules/Platform/Emscripten.cmake'
+          EOF
+          cd engine-src/mkxp-z
+          meson setup build --cross-file /tmp/cross.ini --buildtype release -Db_lto=true -Dlibretro=true -Dlibretro_save_states=true -Demscripten_threaded=false
+          ninja -C build -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mkxp-z-fast-core
+          path: engine-src/mkxp-z/build/mkxp-z_libretro.a
+          retention-days: 2
+  browser:
+    needs: core
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Clone engine source and submodules
+        run: git clone --recursive --depth 1 https://github.com/white-axe/mkxp-z-libretro-emscripten.git engine-src
+      - uses: actions/download-artifact@v4
+        with:
+          name: mkxp-z-fast-core
+          path: engine-src/mkxp-z/build
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - name: Link RetroArch browser without SharedArrayBuffer
+        run: |
+          mv engine-src/mkxp-z/build/mkxp-z_libretro.a engine-src/retroarch/libretro_emscripten.a
+          cd engine-src/retroarch
+          emmake make -j "$(nproc)" -f Makefile.emscripten LIBRETRO=mkxp-z HAVE_THREADS=0 PROXY_TO_PTHREAD=0 HAVE_AUDIOWORKLET=0 HAVE_EXTRA_WASMFS=0 HAVE_WASMFS=0 HAVE_RWEBAUDIO=1 HAVE_AL=0 JSPI=0 ASYNC=1 ASSERTIONS=1
+          test -s mkxp-z_libretro.js
+          test -s mkxp-z_libretro.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FireAsh-mkxp-z-real-engine-fast-unthreaded
+          path: |
+            engine-src/retroarch/mkxp-z_libretro.js
+            engine-src/retroarch/mkxp-z_libretro.wasm
+          retention-days: 30
