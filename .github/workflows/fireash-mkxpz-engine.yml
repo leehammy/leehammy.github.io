@@ -1,0 +1,105 @@
+name: Fire Ash mkxp-z unthreaded engine compilation
+on:
+  push:
+    branches:
+      - fireash-engine-unthreaded-experiment
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ruby-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Clone engine source and submodules
+        run: git clone --recursive --depth 1 https://github.com/white-axe/mkxp-z-libretro-emscripten.git engine-src
+      - name: Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl build-essential automake libtool zip universal-ctags ruby
+      - name: WASI SDK and optimizer
+        run: |
+          curl -fL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-x86_64-linux.tar.gz -o /tmp/wasi.tgz
+          mkdir -p /tmp/wasi-sdk
+          tar -xzf /tmp/wasi.tgz -C /tmp/wasi-sdk --strip-components=1
+          curl -fL https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz -o /tmp/binaryen.tgz
+          mkdir -p /tmp/binaryen
+          tar -xzf /tmp/binaryen.tgz -C /tmp/binaryen --strip-components=1
+      - name: Compile Ruby WASI bridge
+        run: |
+          cd engine-src/mkxp-z/libretro
+          make -j "$(nproc)" WASI_SDK=/tmp/wasi-sdk WASM_OPT=/tmp/binaryen/bin/wasm-opt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ruby-bridge
+          path: engine-src/mkxp-z/libretro/build/libretro-stage1
+          retention-days: 2
+
+  core:
+    needs: ruby-bridge
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Clone engine source and submodules
+        run: git clone --recursive --depth 1 https://github.com/white-axe/mkxp-z-libretro-emscripten.git engine-src
+      - uses: actions/download-artifact@v4
+        with:
+          name: ruby-bridge
+          path: engine-src/mkxp-z/libretro/build/libretro-stage1
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - run: sudo apt-get update && sudo apt-get install -y meson cmake ninja-build
+      - name: Cross compile mkxp-z core single threaded
+        run: |
+          cat > /tmp/cross.ini <<EOF
+          [binaries]
+          c = 'emcc'
+          cpp = 'em++'
+          ar = 'emar'
+          cmake = 'cmake'
+          [host_machine]
+          system = 'emscripten'
+          cpu_family = 'wasm32'
+          cpu = 'wasm32'
+          endian = 'little'
+          [properties]
+          cmake_toolchain_file = '$(em-config EMSCRIPTEN_ROOT)/cmake/Modules/Platform/Emscripten.cmake'
+          EOF
+          cd engine-src/mkxp-z
+          meson setup build --cross-file /tmp/cross.ini --buildtype release -Db_lto=true -Dlibretro=true -Dlibretro_save_states=true -Demscripten_threaded=false
+          ninja -C build -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mkxp-z-core
+          path: engine-src/mkxp-z/build/mkxp-z_libretro.a
+          retention-days: 2
+
+  browser:
+    needs: core
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Clone engine source and submodules
+        run: git clone --recursive --depth 1 https://github.com/white-axe/mkxp-z-libretro-emscripten.git engine-src
+      - uses: actions/download-artifact@v4
+        with:
+          name: mkxp-z-core
+          path: engine-src/mkxp-z/build
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.8
+      - name: Compile RetroArch without pthreads, using Asyncify
+        run: |
+          mv engine-src/mkxp-z/build/mkxp-z_libretro.a engine-src/retroarch/libretro_emscripten.a
+          cd engine-src/retroarch
+          emmake make -j "$(nproc)" -f Makefile.emscripten LIBRETRO=mkxp-z HAVE_THREADS=0 PROXY_TO_PTHREAD=0 HAVE_AUDIOWORKLET=0 HAVE_EXTRA_WASMFS=0 HAVE_WASMFS=0 HAVE_RWEBAUDIO=1 HAVE_AL=0 JSPI=0 ASYNC=1 ASSERTIONS=1
+          test -s mkxp-z_libretro.js
+          test -s mkxp-z_libretro.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FireAsh-mkxp-z-real-engine-unthreaded
+          path: |
+            engine-src/retroarch/mkxp-z_libretro.js
+            engine-src/retroarch/mkxp-z_libretro.wasm
+          retention-days: 30
